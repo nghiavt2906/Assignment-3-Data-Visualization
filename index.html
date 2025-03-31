@@ -1,0 +1,490 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Assignment 3</title>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <script src=" https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js "></script>
+    <script src="https://d3js.org/topojson.v3.min.js"></script>
+    <style>
+      .tooltip {
+        position: absolute;
+        background: white;
+        border: 1px solid #ccc;
+        padding: 8px;
+        box-shadow: 2px 2px 10px rgba(0, 0, 0, 0.2);
+        display: none;
+        font-size: 14px;
+        width: 250px;
+      }
+      .tooltip-header {
+        font-weight: bold;
+        margin-bottom: 5px;
+      }
+      .candidate {
+        display: flex;
+        align-items: center;
+        padding: 4px;
+      }
+      .no-wrap {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin: 0;
+      }
+      .winner-rep {
+        background-color: #d42531;
+        color: white;
+        border-radius: 4px;
+      }
+      .winner-dem {
+        background-color: #244799;
+        color: white;
+        border-radius: 4px;
+      }
+      .party-bar {
+        width: 4px;
+        height: 16px;
+        margin-right: 8px;
+      }
+      .dem {
+        background: #244799;
+      }
+      .rep {
+        background: #d42531;
+      }
+      .vote-count {
+        margin-left: auto;
+      }
+      .checkmark {
+        margin-left: 5px;
+        font-weight: bold;
+      }
+
+      circle {
+        fill: yellow;
+        stroke: gray;
+        stroke-width: 0.25;
+        opacity: 0.65;
+      }
+    </style>
+    <script>
+      window.addEventListener("load", drawDiagram);
+      function drawDiagram() {
+        //Width and height
+        let w = 800;
+        let h = 500;
+
+        //Define map projection
+        let projection = d3.geoAlbersUsa().translate([0, 0]);
+
+        //Define path generator
+        let path = d3.geoPath().projection(projection);
+
+        //SVG element
+        let svg = d3.select("#main").attr("width", w).attr("height", h);
+
+        const tooltip = d3.select(".tooltip");
+
+        let formatAsThousands = d3.format(",");
+
+        //Define what to do when panning or zooming
+        let zooming = function (ev) {
+          //Update projection with new offset and scale
+          projection
+            .translate([ev.transform.x, ev.transform.y])
+            .scale(ev.transform.k * 2000);
+
+          //Update all paths and circles
+          svg.selectAll("path").attr("d", path);
+
+          svg
+            .selectAll("circle")
+            .attr("cx", (d) => path.centroid(d)[0])
+            .attr("cy", (d) => path.centroid(d)[1]);
+
+          let textvisibility = ev.transform.k < 0.25 ? "hidden" : "visible";
+          svg
+            .selectAll(".label")
+            .attr("visibility", textvisibility)
+            .attr("x", (d) => path.centroid(d)[0])
+            .attr("y", (d) => path.centroid(d)[1]);
+        };
+
+        //Then define the zoom behavior
+        let zoom = d3
+          .zoom()
+          .scaleExtent([0.1, 2.0])
+          .translateExtent([
+            [-1200, -700],
+            [1200, 700],
+          ])
+          .on("zoom", zooming);
+
+        //The center of the country, roughly
+        let center = projection([-97.0, 39.0]);
+
+        //Create a container in which all zoom-able elements will live
+        let map = svg
+          .append("g")
+          .attr("id", "map")
+          .call(zoom) //Bind the zoom behavior
+          .call(
+            zoom.transform,
+            d3.zoomIdentity //Then apply the initial transform
+              .translate(w / 2, h / 2)
+              .scale(0.5)
+              .translate(-center[0], -center[1])
+          );
+
+        d3.json("results-house.json").then((votings) => {
+          let voteLookup = {};
+          for (const race of votings.races) {
+            let office_id =
+              race["top_reporting_unit"]["state_postal"] +
+              (race["seat_number"].length == 1
+                ? "0" + race["seat_number"]
+                : race["seat_number"]);
+            let candidates = race["reporting_units"][0]["candidates"];
+            voteLookup[office_id] = {
+              state_name: race["top_reporting_unit"]["name"],
+            };
+            for (const candidate of candidates) {
+              const candidate_metadata =
+                race["candidate_metadata"][candidate["nyt_id"]];
+              if (
+                race["candidate_metadata"][candidate["nyt_id"]].party.name ==
+                "Democrat"
+              ) {
+                voteLookup[office_id]["dem"] = {
+                  votes: candidate["votes"]["total"],
+                  candidate_name: `${candidate_metadata.first_name || ""}${
+                    candidate_metadata.middle_name
+                      ? " " + candidate_metadata.middle_name
+                      : ""
+                  } ${candidate_metadata.last_name || ""}`.trim(),
+                };
+                if (
+                  candidate.leader ||
+                  (race["candidate_metadata"][candidate["nyt_id"]][
+                    "incumbent"
+                  ] &&
+                    !voteLookup[office_id].hasOwnProperty("leader"))
+                )
+                  voteLookup[office_id]["leader"] = "dem";
+              } else if (
+                race["candidate_metadata"][candidate["nyt_id"]].party.name ==
+                "Republican"
+              ) {
+                voteLookup[office_id]["rep"] = {
+                  votes: candidate["votes"]["total"],
+                  candidate_name: `${candidate_metadata.first_name || ""}${
+                    candidate_metadata.middle_name
+                      ? " " + candidate_metadata.middle_name
+                      : ""
+                  } ${candidate_metadata.last_name || ""}`.trim(),
+                };
+                if (
+                  candidate.leader ||
+                  (race["candidate_metadata"][candidate["nyt_id"]][
+                    "incumbent"
+                  ] &&
+                    !voteLookup[office_id].hasOwnProperty("leader"))
+                )
+                  voteLookup[office_id]["leader"] = "rep";
+              }
+            }
+          }
+
+          //Load in GeoJSON data
+          d3.json("NTAD_Congressional_Districts_mapshaper.geojson").then(
+            (json) => {
+              //Bind data and create one path per GeoJSON feature
+              let fixed = json.features.map(function (feature) {
+                return turf.rewind(feature, { reverse: true });
+              });
+              json.features = fixed.filter(
+                (feature) => feature.properties.OFFICE_ID !== ""
+              );
+              office_ids = [];
+              for (const feature of json.features) {
+                feature.properties = {
+                  OFFICE_ID: feature.properties.OFFICE_ID,
+                  voting: voteLookup[feature.properties.OFFICE_ID],
+                };
+                office_ids.push(feature.properties.OFFICE_ID);
+              }
+
+              d3.json("us-states.json").then(async (states) => {
+                const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+                let mouseOver = function (d) {
+                  d3.selectAll(".district")
+                    .transition()
+                    .duration(200)
+                    .style("opacity", 0.5);
+                  d3.select(this)
+                    .transition()
+                    .duration(200)
+                    .style("opacity", 1)
+                    .style("stroke", "black")
+                    .style("stroke-opacity", 1);
+
+                  const properties = d.target.__data__.properties;
+
+                  let tooltipHTML = `<div class="tooltip-header">${
+                    properties.voting.state_name
+                  } District ${parseInt(properties.OFFICE_ID.slice(-2))}</div>`;
+
+                  tooltipHTML += `
+                        <div class="candidate">
+                            <div class="party-bar"></div>
+                            <b>Candidate</b>
+                            <span class="vote-count"><b>Votes</b></span>
+                        </div><hr>`;
+
+                  if (properties.voting.hasOwnProperty("rep"))
+                    tooltipHTML += `
+                        <div class="candidate ${
+                          properties.voting.leader == "rep" ? "winner-rep" : ""
+                        }">
+                            <div class="party-bar rep"></div>
+                            <p class="no-wrap">${
+                              properties.voting.rep.candidate_name
+                            }</p>
+                            <span class="checkmark">${
+                              properties.voting.leader == "rep" ? "✔" : ""
+                            }</span>
+                            <span class="vote-count" id="vote-count-rep"></span>
+                        </div>`;
+
+                  if (properties.voting.hasOwnProperty("dem"))
+                    tooltipHTML += `
+                        <div class="candidate ${
+                          properties.voting.leader == "dem" ? "winner-dem" : ""
+                        }">
+                            <div class="party-bar dem"></div>
+                            <p class="no-wrap">${
+                              properties.voting.dem.candidate_name
+                            }</p>
+                            <span class="checkmark">${
+                              properties.voting.leader == "dem" ? "✔" : ""
+                            }</span>
+                            <span class="vote-count" id="vote-count-dem"></span>
+                        </div>`;
+
+                  tooltip
+                    .style("display", "block")
+                    .html(tooltipHTML)
+                    .style("left", event.pageX + 10 + "px")
+                    .style("top", event.pageY + 10 + "px");
+
+                  d3.selectAll(".winner-rep,.winner-dem")
+                    .style("width", "0%")
+                    .transition()
+                    .duration(1000)
+                    .style("width", "96%");
+
+                  d3.select("#vote-count-rep")
+                    .transition()
+                    .duration(3000)
+                    .tween("text", function () {
+                      const interpolate = d3.interpolateNumber(
+                        0,
+                        properties.voting.rep.votes
+                      );
+                      return function (t) {
+                        d3.select("#vote-count-rep").text(
+                          formatAsThousands(Math.round(interpolate(t)))
+                        );
+                      };
+                    });
+
+                  d3.select("#vote-count-dem")
+                    .transition()
+                    .duration(2000)
+                    .tween("text", function () {
+                      const interpolate = d3.interpolateNumber(
+                        0,
+                        properties.voting.dem.votes
+                      );
+                      return function (t) {
+                        d3.select("#vote-count-dem").text(
+                          formatAsThousands(Math.round(interpolate(t)))
+                        );
+                      };
+                    });
+                };
+
+                let mouseLeave = async function (d) {
+                  tooltip.style("display", "none");
+
+                  d3.selectAll(".district")
+                    .transition()
+                    .duration(200)
+                    .style("opacity", 1);
+
+                  await sleep(1000);
+
+                  const id = d3.select(this)._groups[0][0].id;
+                  do {
+                    if (
+                      parseFloat(
+                        d3.select(`#${id}`)._groups[0][0].style[
+                          "stroke-opacity"
+                        ]
+                      ) <= 0.1
+                    ) {
+                      d3.select(`#${id}`).style("stroke-opacity", 0);
+                      break;
+                    }
+
+                    d3.select(`#${id}`)
+                      .transition()
+                      .duration(1000)
+                      .style("stroke-opacity", 0);
+                    await sleep(2000);
+                  } while (
+                    parseFloat(
+                      d3.select(`#${id}`)._groups[0][0].style["stroke-opacity"]
+                    ) > 0
+                  );
+                };
+
+                map
+                  .selectAll("path")
+                  .data(json.features.concat(states.features))
+                  .enter()
+                  .append("path")
+                  .attr("d", path)
+                  .attr("class", (d) =>
+                    d.properties.hasOwnProperty("OFFICE_ID")
+                      ? "district"
+                      : "state"
+                  )
+                  .attr("id", (d) =>
+                    d.properties.hasOwnProperty("OFFICE_ID")
+                      ? d.properties.OFFICE_ID
+                      : d.properties.name
+                  )
+                  .style("fill", (d) => {
+                    if (!d.properties.hasOwnProperty("OFFICE_ID"))
+                      return "none";
+
+                    let office_id = d.properties.OFFICE_ID;
+
+                    if (
+                      ["DC00", "AQ00", "GU00", "MP00", "PR00", "VI00"].includes(
+                        office_id
+                      )
+                    )
+                      return "grey";
+                    return d.properties.voting.leader == "dem"
+                      ? "#244799"
+                      : "#d42531";
+                  })
+                  .style("stroke", (d) =>
+                    d.properties.hasOwnProperty("OFFICE_ID") ? "none" : "white"
+                  )
+                  .style("stroke-width", 1);
+
+                map
+                  .selectAll(".district")
+                  .on("mouseover", mouseOver)
+                  .on("mouseleave", mouseLeave);
+
+                const abbrLookup = await d3.json("state-abbreviations.json");
+                const gdp = await d3.csv("states-real-gdp.csv");
+
+                for (const state of states.features) {
+                  state.properties.gdp = gdp.find(
+                    (d) => d.Abbreviation == abbrLookup[state.properties.name]
+                  ).GDP;
+                }
+
+                map
+                  .selectAll("text")
+                  .data(states.features)
+                  .enter()
+                  .append("text")
+                  .attr("class", "label")
+                  .attr("x", (d) => path.centroid(d)[0])
+                  .attr("y", (d) => path.centroid(d)[1])
+                  .text((d) => abbrLookup[d.properties.name])
+                  .style("fill", (d) =>
+                    d.properties.name == "Hawaii" ? "#383535" : "white"
+                  );
+
+                map
+                  .selectAll("circle")
+                  .data(states.features)
+                  .enter()
+                  .append("circle")
+                  .attr("cx", (d) => path.centroid(d)[0])
+                  .attr("cy", (d) => path.centroid(d)[1])
+                  .attr("r", (d) =>
+                    Math.sqrt(
+                      parseInt(d.properties.gdp.replaceAll(",", "")) * 0.0004
+                    )
+                  )
+                  .append("title")
+                  .text(
+                    (d) => d.properties.name + ": Real GDP. " + d.properties.gdp
+                  );
+              });
+            }
+          );
+        });
+
+        //Bind 'Reset' button behavior
+        d3.select("#reset").on("click", function () {
+          map.transition().call(
+            zoom.transform,
+            d3.zoomIdentity //Same as the initial transform
+              .translate(w / 2, h / 2)
+              .scale(0.5)
+              .translate(-center[0], -center[1])
+          );
+        });
+      }
+    </script>
+  </head>
+  <body>
+    <button id="reset" style="display: block">Reset View</button>
+    <h3>
+      U.S. Political Voting Patterns and State Wealth: Real GDP by State (Q3
+      2024)
+    </h3>
+    <svg id="main"></svg>
+    <svg id="legend" height="500">
+      <rect x="100" y="100" width="20" height="20" style="fill: #d42531"></rect>
+      <rect x="100" y="125" width="20" height="20" style="fill: #244799"></rect>
+
+      <circle cx="110" cy="175" r="15" style="fill: yellow"></circle>
+      <text
+        x="124"
+        y="110"
+        text-anchor="left"
+        style="fill: #d42531; alignment-baseline: middle"
+      >
+        Republican
+      </text>
+      <text
+        x="124"
+        y="135"
+        text-anchor="left"
+        style="fill: #244799; alignment-baseline: middle"
+      >
+        Democrat
+      </text>
+      <text
+        x="127"
+        y="178"
+        text-anchor="left"
+        style="fill: yellow; alignment-baseline: middle"
+      >
+        Real GDP
+      </text>
+    </svg>
+    <div class="tooltip"></div>
+  </body>
+</html>
